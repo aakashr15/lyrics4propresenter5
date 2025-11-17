@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Unicode → Alankaram .pro5 Converter</title>
+  <style>
+    @font-face {
+      font-family: 'AlankaramPlain';
+      src: url('Alankaram Plain.otf') format('opentype');
+      font-display: swap;
+    }
+    :root{--bg:#0f0f10;--panel:#121214;--muted:#9aa0a6}
+    body{font-family: Inter, system-ui, Arial, sans-serif; background: #0b0b0c; color:#eaeaea; margin:0; padding:20px}
+    .wrap{max-width:1100px;margin:0 auto;display:grid;grid-template-columns:1fr 420px;gap:18px}
+    .card{background:linear-gradient(180deg,#0f0f10,#101012);border-radius:10px;padding:16px;box-shadow:0 6px 18px rgba(0,0,0,.6)}
+    h1{margin:0 0 12px 0;font-size:20px}
+    textarea{width:100%;height:360px;border-radius:8px;padding:12px;background:#070707;color:#fff;border:1px solid #222;font-size:15px}
+    .controls{display:flex;gap:10px;margin-top:12px}
+    button{background:#0f62fe;border:0;padding:10px 14px;border-radius:8px;color:white;cursor:pointer}
+    .muted{color:var(--muted);font-size:13px}
+    .preview{display:flex;flex-direction:column;gap:10px}
+    .thumbnails{display:flex;flex-wrap:wrap;gap:8px}
+    .thumb{width:200px;height:120px;border-radius:6px;overflow:hidden;background:#0b0;color:#111;display:flex;align-items:flex-end;justify-content:center;padding:8px;box-shadow:inset 0 -30px 40px rgba(0,0,0,.4)}
+    .slideText{font-family:'AlankaramPlain', serif;font-size:28px;line-height:1.05;text-align:center;color:#ffffff;text-shadow:0 0 0px rgba(0,0,0,0.6)}
+    .slideCanvas{width:100%;height:360px;background:linear-gradient(0deg,#0b0b0c,#0b0b0c);border-radius:6px;display:flex;align-items:flex-end;justify-content:center}
+    .lower-third{width:100%;padding:10px 90px 26px 90px;box-sizing:border-box}
+    label{display:block;font-size:13px;margin-top:8px}
+    input[type=text]{width:100%;padding:8px;border-radius:6px;border:1px solid #222;background:#070707;color:#fff}
+    .small{font-size:13px;color:#bfc6cc}
+    .note{margin-top:10px;color:#bfc6cc;font-size:13px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <main class="card">
+      <h1>Unicode Tamil → Alankaram (.pro5) converter</h1>
+      <div class="muted">Paste Unicode Tamil lyrics on the left. Click Convert to see thumbnails. Download generates a .pro5 file (default name <code>converted.pro5</code>).</div>
+
+      <label class="note">Lyrics (Unicode Tamil)</label>
+      <textarea id="inputLyrics" placeholder="Paste Unicode Tamil lyrics here..."></textarea>
+
+      <div class="controls">
+        <button id="btnConvert">Convert & Preview</button>
+        <button id="btnDownload" disabled>Download .pro5</button>
+        <input id="filename" type="text" value="converted.pro5" style="min-width:180px;margin-left:auto" />
+      </div>
+
+      <div class="preview-title">Preview</div>
+
+      <div class="preview" style="margin-top:14px">
+        <div class="slideCanvas card" id="canvasPreview">
+          <div class="lower-third"><div id="livePreviewText" class="slideText">Preview will appear here after conversion</div></div>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+          <div class="muted">Thumbnails</div>
+          <div class="small">Max 2 lines per slide. Blank line forces new slide.</div>
+        </div>
+
+        <div class="thumbnails card" id="thumbs"></div>
+      </div>
+
+    </main>
+  </div>
+  <script src="converter.js"></script>
+  <script>
+    // --- Helpers ---
+    function safeB64(s){ try{ return btoa(unescape(encodeURIComponent(s))); }catch(e){ return btoa(s); }}
+
+    function splitToSlides(raw){
+      // Normalize newlines
+      raw = raw.replace(/\r/g,'');
+      const lines = raw.split('\n');
+      const slides = [];
+      let buffer = [];
+      function flush(){ if(buffer.length){ slides.push(buffer.join('\n')); buffer=[]; }}
+
+      for(let i=0;i<lines.length;i++){
+        const line = lines[i].trim();
+        if(line === ''){ // forced break
+          flush();
+        } else {
+          buffer.push(line);
+          if(buffer.length===2) flush();
+        }
+      }
+      flush();
+      // Wrap very long lines (visual) — if a slide has a single very long line, split at nearest space around midpoint
+      const wrapped=[];
+      for(const s of slides){
+        const parts = s.split('\n');
+        if(parts.length===1){
+          const single = parts[0];
+          if(single.length>40){
+            // find space near midpoint
+            const mid = Math.floor(single.length/2);
+            let left = single.lastIndexOf(' ', mid);
+            let right = single.indexOf(' ', mid);
+            const cut = (left===-1) ? (right===-1 ? mid : right) : left;
+            const a = single.slice(0,cut).trim();
+            const b = single.slice(cut).trim();
+            wrapped.push(a+'\n'+b);
+            continue;
+          }
+        }
+        wrapped.push(s);
+      }
+      return wrapped;
+    }
+
+    function makeRTF(baminiText) {
+        const escaped = baminiText
+            .replace(/\\/g, "\\\\")
+            .replace(/\{/g, "\\{")
+            .replace(/\}/g, "\\}")
+            .replace(/\n/g, "\\par ");
+
+        // return "{\\rtf1\\ansi\\deff0" +
+        //     "{\\fonttbl{\\f0 Alankaram Plain;}}" +
+        //     "{\\colortbl;\\red0\\green0\\blue0;\\red255\\green255\\blue255;}" +
+        //     "\\f0\\fs180 \\qc " +   // white text, centered
+        //     escaped +
+        //     "}";
+
+            // return "{\\rtf1\\ansi\\deff0"
+            // + "{\\fonttbl{\\f0 Alankaram Plain;}}"
+            // + "{\\colortbl;\\red0\\green0\\blue0;\\red255\\green255\\blue255;}"
+            // + "\\qc "
+            // + "{\\f0\\b\\cf1 " + escaped + "}"
+            // + "{\\par}{\\f0\\cf2 " + escaped + "}"
+            // + "}";
+
+//   const rtf = `{\\rtf1\\ansi{\\fonttbl{\\f0\\fnil\\fcharset0 Alankaram Plain;}}{\\colortbl;\\red255\\green255\\blue255;\\red0\\green0\\blue0;}\\f0\\fs180\\qc\\cf1\\outl0\\ulnone ${escaped}}`;
+        const rtf = `{\\rtf1\\ansi{\\fonttbl{\\f0\\fnil Alankaram Plain;}}{\\colortbl;\\red0\\green0\\blue0;\\red255\\green255\\blue255;}\\qc\\f0\\fs180{\\outl \\strokewidth200 \\strokec1 \\cf2 ${escaped}}
+        }`;        
+  
+        return rtf;
+    }
+
+
+
+    function buildSlideXML(rtfBase64, uuid){
+      // Use many of the attributes from your sample. We'll include a stroke container with width 9 to emulate outline.
+      return `
+        <RVDisplaySlide backgroundColor="0.180392161011696 0.937254905700684 0.0117647061124444 1" enabled="1" Color="1 1 1 0" hotKey="" label="" notes="" slideType="1" sort_index="0" UUID="${uuid}" drawingBackgroundColor="1" chordChartPath="" serialization-array-index="0">
+          <cues containerClass="NSMutableArray" />
+          <displayElements containerClass="NSMutableArray">
+            <RVTextElement displayDelay="0" locked="0" persistent="0" typeID="0" fromTemplate="0" bezelRadius="0" drawingFill="0" drawingShadow="0" drawingStroke="0" fillColor="0 0 0 1" rotation="0" source="" displayName="Default" adjustsHeightToFit="0" verticalAlignment="0" RTFData="${rtfBase64}" revealType="0" serialization-array-index="0">
+              <_-RVRect3D-_position x="56" y="804" z="0" width="1808" height="233" />
+              <_-D-_serializedShadow containerClass="NSMutableDictionary">
+                <NSCalibratedRGBColor serialization-native-value="0 0 0 1" serialization-dictionary-key="shadowColor" />
+                <NSMutableString serialization-native-value="{2.82842969894409, -2.82843065261841}" serialization-dictionary-key="shadowOffset" />
+                <NSNumber serialization-native-value="4" serialization-dictionary-key="shadowBlurRadius" />
+              </_-D-_serializedShadow>
+              <stroke containerClass="NSMutableDictionary">
+                <NSCalibratedRGBColor serialization-native-value="1 1 1 1" serialization-dictionary-key="RVShapeElementStrokeColorKey" />
+                <NSNumber serialization-native-value="9" serialization-dictionary-key="RVShapeElementStrokeWidthKey" />
+              </stroke>
+            </RVTextElement>
+          </displayElements>
+          <_-RVProTransitionObject-_transitionObject transitionType="-1" transitionDuration="1" motionEnabled="0" motionSpeed="0" />
+        </RVDisplaySlide>
+      `;
+    }
+
+    function uuidv4(){return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,function(c){var r=Math.random()*16|0,v=c=='x'?r:(r&0x3|0x8);return v.toString(16);});}
+
+    function buildPro5(slideXMLArray){
+      // Wrap into the full document using the sample template structure
+      const slidesJoined = slideXMLArray.join('\n');
+      const xml = `<?xml version="1.0"?>\n<RVPresentationDocument height="1080" width="1920" versionNumber="500" creatorCode="1349676880" lastDateUsed="${new Date().toISOString()}" category="Default" backgroundColor="0 0 0 1" drawingBackgroundColor="0" notes="" artist="" author="" album="" CCLIDisplay="0" CCLIArtistCredits="" CCLISongTitle="Converted" CCLIPublisher="" CCLICopyrightInfo="" CCLILicenseNumber="" resourcesDirectory="" chordChartPath="">\n  <groups containerClass="NSMutableArray">\n    <RVSlideGrouping name="" uuid="${uuidv4()}" color="1 1 1 0" serialization-array-index="0">\n      <slides containerClass="NSMutableArray">\n${slidesJoined}\n      </slides>\n    </RVSlideGrouping>\n  </groups>\n  <arrangements containerClass="NSMutableArray" />\n  <timeline timeOffSet="0" selectedMediaTrackIndex="-1" unitOfMeasure="60" duration="0" loop="0">\n    <timeCues containerClass="NSMutableArray" />\n    <mediaTracks containerClass="NSMutableArray" />\n  </timeline>\n  <bibleReference containerClass="NSMutableDictionary" />\n  <_-RVProTransitionObject-_transitionObject transitionType="0" transitionDuration="0" motionEnabled="0" motionSpeed="0" />\n</RVPresentationDocument>`;
+      return xml;
+    }
+
+    // DOM
+    const input = document.getElementById('inputLyrics');
+    const btnConvert = document.getElementById('btnConvert');
+    const btnDownload = document.getElementById('btnDownload');
+    const thumbs = document.getElementById('thumbs');
+    const livePreviewText = document.getElementById('livePreviewText');
+    const canvasPreview = document.getElementById('canvasPreview');
+    const filenameInput = document.getElementById('filename');
+
+    async function convertAndPreview(){
+      const raw = input.value.trim();
+      if(!raw){ alert('Paste some lyrics first'); return; }
+
+      // Try to use converter.js's function if present
+      let convertFn = null;
+      if(window.unicodeToBamini && typeof window.unicodeToBamini === 'function') convertFn = window.unicodeToBamini;
+
+      // If converter.js provides unicodeToBamini that returns Bamini, we want Alankaram — user asked to call unicodeToBamini(input)
+      // We'll call it and assume it returns desired alankaram text. If not available, use identity.
+      const preconverted = convertFn ? convertFn(raw) : raw;
+
+      const slides = splitToSlides(preconverted);
+
+      // Build thumbnail UI and create XML slides
+      thumbs.innerHTML = '';
+      const slideXMLs = [];
+      slides.forEach((s,i)=>{
+        const uuid = uuidv4();
+        const rtf = makeRTF(s);
+        const b64 = btoa(rtf);
+        slideXMLs.push(buildSlideXML(b64, uuid));
+
+        const div = document.createElement('div'); div.className='thumb'; div.dataset.index = i;
+        const inner = document.createElement('div'); inner.className='slideText'; inner.style.fontSize='10px'; inner.innerText = s;
+        div.appendChild(inner);
+        div.addEventListener('click', ()=>{
+          selectSlide(i, s);
+        });
+        thumbs.appendChild(div);
+      });
+
+      // select first slide
+      selectSlide(0, slides[0]);
+
+      // store the built pro5 in a variable for download
+      window.__generatedPro5 = buildPro5(slideXMLs);
+      btnDownload.disabled = false;
+    }
+
+    function selectSlide(i, text){
+      livePreviewText.innerText = text;
+      // update big preview style
+      livePreviewText.style.fontSize = '20px';
+    }
+
+    btnConvert.addEventListener('click', ()=>{
+      convertAndPreview();
+    });
+
+    btnDownload.addEventListener('click', ()=>{
+      if(!window.__generatedPro5){ alert('No .pro5 generated yet — click Convert first'); return; }
+      const name = (filenameInput.value || 'converted.pro5').trim();
+      const blob = new Blob([window.__generatedPro5], {type:'application/xml'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = name;
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    });
+
+    // quick load: if converter.js is present as a script in same dir, it will be used automatically. You can also include it in the page.
+  </script>
+</body>
+</html>
